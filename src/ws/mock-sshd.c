@@ -191,6 +191,8 @@ fork_exec (const gchar *cmd)
       return -1;
     }
 
+  g_printerr ("mock-sshd: Doing exec of '%s'\n", cmd);
+
   state.childpid = fork ();
   if (state.childpid == 0)
     {
@@ -254,12 +256,19 @@ channel_request_callback (ssh_session session,
                           gpointer user_data)
 {
   const gchar *cmd;
+  int msg;
+  int subtype;
+
+  msg = ssh_message_type (message);
+  subtype = ssh_message_subtype (message);
+
+  g_printerr ("mock-sshd: Got channel request %d %d\n", msg, subtype);
 
   /* wait for a shell */
-  switch (ssh_message_type (message))
+  switch (msg)
     {
     case SSH_REQUEST_CHANNEL:
-      switch (ssh_message_subtype (message))
+      switch (subtype)
         {
         case SSH_CHANNEL_REQUEST_SHELL:
           if (do_shell (state.event, state.channel) < 0)
@@ -474,6 +483,8 @@ main (int argc,
     { "verbose", 'v', 0, G_OPTION_ARG_NONE, &verbose, "Verbose info", NULL },
     { NULL }
   };
+
+  g_printerr ("mock-sshd: initializing\n");
 
 #ifdef __linux
 #include <sys/prctl.h>

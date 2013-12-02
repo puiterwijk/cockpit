@@ -58,6 +58,7 @@ libgsystem_libs := $(GIO_LIBS)
 include src/libgsystem/Makefile-libgsystem.am
 noinst_LTLIBRARIES += libgsystem.la
 
+include src/libgssh/Makefile-libgssh.am
 include src/ws/Makefile-ws.am
 include src/daemon/Makefile-daemon.am
 include src/web/Makefile-web.am

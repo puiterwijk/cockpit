@@ -8,6 +8,7 @@ libcockpit_ws_la_SOURCES = 				\
 	src/ws/cockpitwebsocket.h 	src/ws/cockpitwebsocket.c		\
 	src/ws/cockpithandlers.h	src/ws/cockpithandlers.c	\
 	src/ws/cockpitauth.h		src/ws/cockpitauth.c		\
+	src/ws/cockpit-password-interaction.h		src/ws/cockpit-password-interaction.c		\
 	cockpitwsenumtypes.h	cockpitwsenumtypes.c	\
 	$(NULL)
 
@@ -15,6 +16,7 @@ libcockpit_ws_la_CPPFLAGS = \
         $(cockpit_cppflags_common) \
 	$(cockpit_cppflags_glib_version)			\
 	-I$(top_srcdir)/src/libgsystem \
+	-I$(top_srcdir)/src/libgssh \
 	-I$(top_srcdir)/src/ws \
 	-DCOCKPIT_BUILD_INFO=\"$(COCKPIT_BUILD_INFO)\"	\
 	-DG_LOG_DOMAIN=\"libcockpit-ws\" \
@@ -29,6 +31,7 @@ libcockpit_ws_la_LIBADD =					\
 	$(COCKPIT_WS_LIBS)					\
         libcockpit-1.0.la					\
 	libgsystem.la		\
+	libgssh.la		\
 	libwebsocket.la		\
 	$(NULL)
 

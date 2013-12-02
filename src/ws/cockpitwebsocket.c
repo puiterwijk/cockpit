@@ -30,7 +30,9 @@
 #include <cockpit/cockpit.h>
 
 #include "cockpitws.h"
+#include "cockpit-password-interaction.h"
 #include "libgsystem.h"
+#include "gssh.h"
 
 #include "websocket/websocket.h"
 
@@ -54,6 +56,11 @@ typedef struct
   GOutputStream           *to_session;
   GInputStream            *from_session;
   gboolean                 eof_from_session;
+
+  GSshConnection          *ssh_connection;
+  GSshChannel             *ssh_channel;
+  CockpitPasswordInteraction *password_interaction;
+  GCancellable            *ssh_cancellable;
 
   GMainContext            *main_context;
 
@@ -165,15 +172,22 @@ begin_session_write (WebSocketData       *data)
 {
   GBytes *first;
 
+  /* We may not have connected yet; if so defer until we are */
+  if (data->to_session == NULL)
+    return;
+
+  /* Only one write at a time */
   if (data->active_session_write)
     return;
 
+  /* If we don't have any work to do, just return */
   first = g_queue_peek_head (&data->session_write_queue);
   if (!first)
     return;
 
   data->active_session_write = TRUE;
 
+  g_debug ("preparing write of %" G_GSIZE_FORMAT " bytes", g_bytes_get_size (first));
   g_output_stream_write_bytes_async (data->to_session, first, G_PRIORITY_DEFAULT,
                                      data->sessionio_cancellable,
                                      on_session_write_bytes_complete,
@@ -231,6 +245,7 @@ on_session_read_complete (GObject            *src,
   g_debug ("session read %lld bytes", (long long) bytes_read);
   if (bytes_read <= 0)
     {
+      g_debug ("got EOF from session");
       data->eof_from_session = TRUE;
       g_main_context_wakeup (data->main_context);
       if (bytes_read < 0)
@@ -320,30 +335,134 @@ on_session_read_complete (GObject            *src,
   web_socket_data_unref (data);
 }
 
+static void
+on_exec_complete (GObject                *src,
+                  GAsyncResult           *res,
+                  gpointer                user_data)
+{
+  WebSocketData *data = user_data;
+  GError *local_error = NULL;
+
+  g_debug ("Exec of agent on %s complete", data->target_host);
+
+  data->ssh_channel = gssh_connection_exec_finish ((GSshConnection*)src, res, &local_error);
+  if (!data->ssh_channel)
+    {
+      g_info ("Failed to exec agent on %s: %s", data->target_host, local_error->message);
+      send_error (data, "terminated");
+      return;
+    }
+
+  data->to_session = g_object_ref (g_io_stream_get_output_stream ((GIOStream*)data->ssh_channel));
+  data->from_session = g_object_ref (g_io_stream_get_input_stream ((GIOStream*)data->ssh_channel));
+
+  data->readstate = WS_STATE_READING_SIZE_WORD;
+  data->size_word_bytes_read = 0;
+  g_debug ("Starting initial async read");
+  g_input_stream_read_async (data->from_session,
+			     data->size_word_bytes, 4,
+			     G_PRIORITY_DEFAULT, data->sessionio_cancellable,
+			     on_session_read_complete, data);
+
+  begin_session_write (data);
+}
+
+static void
+on_auth_complete (GObject                *src,
+                  GAsyncResult           *res,
+                  gpointer                user_data)
+{
+  WebSocketData *data = user_data;
+  GError *local_error = NULL;
+
+  g_debug ("Authentication with %s complete", data->target_host);
+
+  if (!gssh_connection_auth_finish ((GSshConnection*)src, res, &local_error))
+    {
+      g_info ("Failed to authenticate with %s: %s", data->target_host, local_error->message);
+      send_error (data, "not-authorized");
+      return;
+    }
+
+  gssh_connection_exec_async (data->ssh_connection, data->agent_program,
+			      data->ssh_cancellable,
+			      on_exec_complete, data);
+}
+
+static void
+on_negotiate_complete (GObject             *src,
+                       GAsyncResult        *result,
+                       gpointer             user_data)
+{
+  WebSocketData *data = user_data;
+  GError *local_error = NULL;
+  guint n_mechanisms;
+  guint *available_authmechanisms;
+  gboolean found_password = FALSE;
+
+  g_debug ("Negotiation with %s complete", data->target_host);
+
+  if (!gssh_connection_negotiate_finish ((GSshConnection*)src, result, &local_error))
+    {
+      g_info ("Failed to negotiate with %s: %s", data->target_host, local_error->message);
+      g_clear_error (&local_error);
+      send_error (data, "terminated");
+      return;
+    }
+
+  gssh_connection_get_authentication_mechanisms (data->ssh_connection,
+                                                 &available_authmechanisms,
+                                                 &n_mechanisms);
+
+  for (guint i = 0; i < n_mechanisms; i++)
+    if (available_authmechanisms[i] == GSSH_CONNECTION_AUTH_MECHANISM_PASSWORD)
+      found_password = TRUE;
+
+  if (!found_password)
+    {
+      g_info ("Host %s doesn't offer 'password' authentication mechanism", data->target_host);
+      g_clear_error (&local_error);
+      send_error (data, "terminated");
+      return;
+    }
+
+  gssh_connection_auth_async (data->ssh_connection,
+			      GSSH_CONNECTION_AUTH_MECHANISM_PASSWORD,
+			      data->ssh_cancellable,
+			      on_auth_complete, data);
+}
+
+static void
+on_ssh_handshake_complete (GObject             *src,
+			   GAsyncResult        *res,
+			   gpointer             user_data)
+{
+  WebSocketData *data = user_data;
+  GError *local_error = NULL;
+
+  g_debug ("Handshake with %s complete", data->target_host);
+
+  if (!gssh_connection_handshake_finish (data->ssh_connection, res, &local_error))
+    {
+      g_info ("Failed to connect to %s: %s", data->target_host, local_error->message);
+      g_clear_error (&local_error);
+      send_error (data, "terminated");
+      return;
+    }
+
+  gssh_connection_negotiate_async (data->ssh_connection, data->ssh_cancellable,
+                                   on_negotiate_complete, data);
+}
+
 static gboolean
-open_session (WebSocketData *data,
-              GCancellable *cancellable,
-              GError **error)
+open_session_local (WebSocketData *data,
+		    GCancellable *cancellable,
+		    GError **error)
 {
   gboolean ret = FALSE;
   int session_stdin = -1;
   int session_stdout = -1;
-  gchar pwfd[sizeof(int) * 3];
-  gchar port[sizeof(int) * 3];
   gchar login[256];
-  int pwpipe[2] = { -1, -1 };
-
-  gchar *argv_remote[] =
-    { "/usr/bin/sshpass",
-      "-d", pwfd,
-      "/usr/bin/ssh",
-      "-o", "StrictHostKeyChecking=no",
-      "-l", data->user,
-      "-p", port,
-      data->target_host,
-      data->agent_program,
-      NULL
-    };
 
   gchar *argv_session[] =
     { PACKAGE_LIBEXEC_DIR "/cockpit-session",
@@ -362,47 +481,23 @@ open_session (WebSocketData *data,
 
   GSpawnFlags flags = G_SPAWN_DO_NOT_REAP_CHILD;
 
-  if (data->specific_port == 0 &&
-      g_strcmp0 (data->target_host, "localhost") == 0)
+  /*
+   * If we're already in the right session, then skip cockpit-session.
+   * This is used when testing, or running as your own user.
+   *
+   * This doesn't apply if this code is running as a service, or otherwise
+   * unassociated from a terminal, we get a non-zero return value from
+   * getlogin_r() in that case.
+   */
+  if (getlogin_r (login, sizeof (login)) == 0 &&
+      g_str_equal (login, data->user))
     {
-      /*
-       * If we're already in the right session, then skip cockpit-session.
-       * This is used when testing, or running as your own user.
-       *
-       * This doesn't apply if this code is running as a service, or otherwise
-       * unassociated from a terminal, we get a non-zero return value from
-       * getlogin_r() in that case.
-       */
-      if (getlogin_r (login, sizeof (login)) == 0 &&
-          g_str_equal (login, data->user))
-        {
-          argv = argv_local;
-        }
-      else
-        {
-          argv = argv_session;
-        }
+      argv = argv_local;
     }
   else
     {
-      argv = argv_remote;
-
-      if (g_unix_open_pipe (pwpipe, 0, error) < 0)
-        goto out;
-
-      /* Pass the out side (by convention) of the pipe to sshpass */
-      g_snprintf (pwfd, sizeof (pwfd), "%d", pwpipe[0]);
-
-      flags |= G_SPAWN_LEAVE_DESCRIPTORS_OPEN;
-
-      g_snprintf (port, sizeof (port), "%d",
-                  data->specific_port ? data->specific_port : 22);
+      argv = argv_session;
     }
-
-  /*
-   * We leave file descriptors open for communication with sshpass. ssh
-   * itself will close open file descriptors before proceeding further.
-   */
 
   if (!g_spawn_async_with_pipes (NULL,
                                  argv,
@@ -416,37 +511,6 @@ open_session (WebSocketData *data,
                                  NULL,
                                  error))
       goto out;
-
-  if (argv == argv_remote)
-    {
-      FILE *stream;
-      gboolean failed;
-
-      close (pwpipe[0]);
-      pwpipe[0] = -1;
-
-      /*
-       * Yes, doing a blocking write like this assumes inside knowledge of the
-       * sshpass tool. We have that inside knowledge (sshpass [driven by ssh]
-       * will read the password fd before blocking on stdin or stdout, besides
-       * there's a kernel buffer as well) ... And this is temporary until
-       * we migrate to libssh.
-       */
-      stream = fdopen (pwpipe[1], "w");
-      fwrite (data->password, 1, strlen (data->password), stream);
-      fputc ('\n', stream);
-      fflush (stream);
-      failed = ferror (stream);
-      fclose (stream);
-      pwpipe[1] = -1;
-
-      if (failed)
-        {
-          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-                               "Couldn't give password to sshpass");
-          goto out;
-        }
-    }
 
   data->to_session = g_unix_output_stream_new (session_stdin, TRUE);
   data->from_session = g_unix_input_stream_new (session_stdout, TRUE);
@@ -464,12 +528,7 @@ open_session (WebSocketData *data,
                              web_socket_data_ref (data));
 
   ret = TRUE;
-
 out:
-  if (pwpipe[0] >= 0)
-    close (pwpipe[0]);
-  if (pwpipe[1] >= 0)
-    close (pwpipe[1]);
   if (session_stdin >= 0)
     close (session_stdin);
   if (session_stdout >= 0)
@@ -489,43 +548,71 @@ out:
   return ret;
 }
 
+static gboolean
+open_session_ssh (WebSocketData *data,
+		  GCancellable *cancellable,
+		  GError **error)
+{
+  gboolean ret = FALSE;
+  gs_unref_object GSocketConnectable *address = NULL;
+
+  address = g_network_address_parse (data->target_host, data->specific_port ? data->specific_port : 22, error);
+  if (!address)
+    goto out;
+
+  data->ssh_connection = gssh_connection_new (address, data->user);
+  gssh_connection_set_interaction (data->ssh_connection, (GTlsInteraction*)data->password_interaction);
+
+  /* Connect now, just queue any messages */
+  g_signal_connect (data->web_socket, "message",
+                    G_CALLBACK (on_web_socket_message), data);
+
+  gssh_connection_handshake_async (data->ssh_connection, data->ssh_cancellable,
+				   on_ssh_handshake_complete, data);
+  
+  ret = TRUE;
+ out:
+  return ret;
+}
+
 static void
 close_session (WebSocketData *data)
 {
+  gboolean session_was_active;
+
   if (data->sessionio_cancellable)
     g_cancellable_cancel (data->sessionio_cancellable);
+
+  session_was_active = data->to_session != NULL;
+
+  g_clear_object (&data->to_session);
+  g_clear_object (&data->from_session);
+  g_clear_object (&data->ssh_connection);
 
   if (data->session_pid)
     {
       int status;
       GError *error = NULL;
 
-      g_output_stream_close (data->to_session, NULL, NULL);
       TEMP_FAILURE_RETRY (waitpid (data->session_pid, &status, 0));
       g_spawn_close_pid (data->session_pid);
       data->session_pid = 0;
 
-      g_input_stream_close (data->from_session, NULL, NULL);
-
       if (WIFSIGNALED (status) && WTERMSIG (status) == SIGTERM)
         send_error (data, "terminated");
-      else if (WIFEXITED (status) && WEXITSTATUS (status) == 5)
-        send_error (data, "not-authorized");  // wrong password
-      else if (WIFEXITED (status) && WEXITSTATUS (status) == 6)
-        send_error (data, "unknown-hostkey");
-      else if (WIFEXITED (status) && WEXITSTATUS (status) == 255)
-        send_error (data, "terminated");      // ssh failed or got a signal, etc.
       else if (!g_spawn_check_exit_status (status, &error))
         {
           send_error (data, "internal-error");
           g_warning ("%s failed: %s", data->agent_program, error->message);
           g_error_free (error);
         }
-
-      g_signal_handlers_disconnect_by_func (data->web_socket, on_web_socket_message, data);
-      g_clear_object (&data->from_session);
-      g_clear_object (&data->to_session);
     }
+  else if (session_was_active)
+    {
+      send_error (data, "terminated");
+    }
+  
+  g_signal_handlers_disconnect_by_func (data->web_socket, on_web_socket_message, data);
 }
 
 static void
@@ -548,13 +635,27 @@ on_web_socket_open (WebSocketConnection *web_socket,
       send_error (data, "no-session");
       web_socket_connection_close (web_socket, WEB_SOCKET_CLOSE_GOING_AWAY, "not-authenticated");
     }
-  else if (!open_session (data, NULL, &error))
+  else
     {
-      g_warning ("Failed to set up session: %s", error->message);
-      g_clear_error (&error);
+      gboolean success;
 
-      send_error (data, "internal-error");
-      web_socket_connection_close (web_socket, WEB_SOCKET_CLOSE_SERVER_ERROR, "transport-failed");
+      if (data->specific_port == 0 &&
+	  g_strcmp0 (data->target_host, "localhost") == 0)
+	{
+	  success = open_session_local (data, NULL, &error);
+	}
+      else
+	{
+	  success = open_session_ssh (data, NULL, &error);
+	}
+      if (!success)
+	{
+	  g_warning ("Failed to set up session: %s", error->message);
+	  g_clear_error (&error);
+	  
+	  send_error (data, "internal-error");
+	  web_socket_connection_close (web_socket, WEB_SOCKET_CLOSE_SERVER_ERROR, "transport-failed");
+	}
     }
 }
 
@@ -615,6 +716,8 @@ cockpit_web_socket_serve_dbus (CockpitWebServer *server,
   data->authenticated = cockpit_auth_check_headers (auth, headers,
                                                  &(data->user), &(data->password));
 
+  data->password_interaction = cockpit_password_interaction_new (data->password);
+
   /* TODO: We need to validate Host throughout */
   url = g_strdup_printf ("%s://host-not-yet-used/socket/%s",
                          G_IS_TLS_CONNECTION (io_stream) ? "wss" : "ws",
@@ -639,7 +742,9 @@ cockpit_web_socket_serve_dbus (CockpitWebServer *server,
 
   while (web_socket_connection_get_ready_state (data->web_socket) != WEB_SOCKET_STATE_CLOSED)
     {
-      /* The socket was closed by the cockpit-agent going away */
+      /* The socket was closed by the cockpit-agent going away; close when we are
+       * done writing.
+       */
       if (data->eof_from_session)
         {
           if (web_socket_connection_get_ready_state (data->web_socket) < WEB_SOCKET_STATE_CLOSING)
@@ -648,6 +753,7 @@ cockpit_web_socket_serve_dbus (CockpitWebServer *server,
 
       g_main_context_iteration (data->main_context, TRUE);
     }
+  g_debug ("Exiting iteration");
 
   g_cancellable_cancel (data->sessionio_cancellable);
 
