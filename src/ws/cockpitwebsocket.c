@@ -362,7 +362,8 @@ on_exec_complete (GObject                *src,
   g_input_stream_read_async (data->from_session,
 			     data->size_word_bytes, 4,
 			     G_PRIORITY_DEFAULT, data->sessionio_cancellable,
-			     on_session_read_complete, data);
+			     on_session_read_complete,
+                             web_socket_data_ref (data));
 
   begin_session_write (data);
 }
