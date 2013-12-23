@@ -30,6 +30,8 @@ function cockpit_client_error_description (error) {
         return _("Internal error");
     else if (error == "timeout")
         return _("Connection has timed out.");
+    else if (error == "no-agent")
+        return _("The management agent is not installed.");
     else if (error === null)
         return _("Server has closed the connection.");
     else
@@ -273,6 +275,8 @@ PageDashboard.prototype = {
     server_action: function (machine, op) {
         if (op == "manage") {
             cockpit_go_down ({ page: "server", machine: machine.address });
+        } else if (op == "setup") {
+            cockpit_setup_server (machine.address);
         } else if (op == "connect") {
             machine.client.connect();
         } else if (op == "disconnect") {

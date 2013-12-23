@@ -107,6 +107,7 @@ along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
                data-corners="false" data-history="false" data-role="popup">
             <div data-role="controlgroup" style="margin-top:0;margin-bottom:0">
               <button translatable="yes" class="ready" data-op="manage">Manage</button>
+              <button translatable="yes" class="always" data-op="setup">Setup</button>
               <button translatable="yes" class="closed" data-op="connect">Connect</button>
               <button translatable="yes" class="ready" data-op="disconnect">Disconnect</button>
               <button translatable="yes" class="always" data-op="remove">Remove</button>
@@ -139,6 +140,75 @@ along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
                   </td>
                   <td style="text-align:right;width:30%">
                     <button id="dashboard_add_server_add" data-theme="b" translatable="yes">Add</button>
+                  </td>
+                </tr>
+              </table>
+            </div>
+          </div>
+
+          <div data-role="popup" id="dashboard_setup_server_dialog"
+               data-theme="c"
+               data-overlay-theme="a"
+               data-history="false">
+            <div data-role="header">
+              <h1>Setup Server</h1>
+            </div>
+            <div data-role="content">
+
+              <div class="cockpit-setup-tab"
+                   id="dashboard_setup_login_tab">
+                <table style="width:100%" class="cockpit-form-table">
+                  <tr>
+                    <td translatable="yes" style="text-align:right">User name</td>
+                    <td style="width:500px">
+                      <input type="text" id="dashboard_setup_login_user"/>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td translatable="yes" style="text-align:right">Password</td>
+                    <td style="width:500px">
+                      <input type="password" id="dashboard_setup_login_password"/>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td id="dashboard_setup_login_error" colspan="2" style="color:red">
+                    </td>
+                  </tr>
+                </table>
+              </div>
+
+              <div class="cockpit-setup-tab"
+                   id="dashboard_setup_no_agent_tab">
+                <p>The management agent is not installed on the
+                  machine.  In the future, you can try to install it
+                  from here.  For now, please install it manually.
+                </p>
+              </div>
+
+              <div class="cockpit-setup-tab"
+                   id="dashboard_setup_confirm_tab">
+                <p>The following user accounts will be created or updated:</p>
+                <div id="dashboard_setup_names"></div>
+              </div>
+
+              <div class="cockpit-setup-tab"
+                   id="dashboard_setup_setup_tab">
+                <div id="dashboard_setup_status">
+                </div>
+              </div>
+
+              <div class="cockpit-setup-tab"
+                   id="dashboard_setup_no_setup_tab">
+                <p>No setup is necessary.</p>
+              </div>
+
+              <table style="width:100%">
+                <tr>
+                  <td style="text-align:left;width:30%">
+                    <button id="dashboard_setup_cancel" data-theme="a" translatable="yes">Cancel</button>
+                  </td>
+                  <td style="text-align:right;width:30%">
+                    <button id="dashboard_setup_next" data-theme="b" translatable="yes"></button>
                   </td>
                 </tr>
               </table>
