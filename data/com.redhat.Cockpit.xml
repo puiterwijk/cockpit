@@ -1109,6 +1109,14 @@
       <arg name="value" type="s" direction="in"/>
     </method>
 
+    <method name="GetPasswordHash">
+      <arg name="data" type="s" direction="out"/>
+    </method>
+
+    <method name="SetPasswordHash">
+      <arg name="data" type="s" direction="in"/>
+    </method>
+
     <method name="SetLocked">
       <arg name="value" type="b" direction="in"/>
     </method>
