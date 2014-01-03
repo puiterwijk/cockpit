@@ -360,9 +360,9 @@ on_exec_complete (GObject                *src,
   data->size_word_bytes_read = 0;
   g_debug ("Starting initial async read");
   g_input_stream_read_async (data->from_session,
-			     data->size_word_bytes, 4,
-			     G_PRIORITY_DEFAULT, data->sessionio_cancellable,
-			     on_session_read_complete,
+                             data->size_word_bytes, 4,
+                             G_PRIORITY_DEFAULT, data->sessionio_cancellable,
+                             on_session_read_complete,
                              web_socket_data_ref (data));
 
   begin_session_write (data);
@@ -386,8 +386,8 @@ on_auth_complete (GObject                *src,
     }
 
   gssh_connection_exec_async (data->ssh_connection, data->agent_program,
-			      data->ssh_cancellable,
-			      on_exec_complete, data);
+                              data->ssh_cancellable,
+                              on_exec_complete, data);
 }
 
 static void
@@ -428,15 +428,15 @@ on_negotiate_complete (GObject             *src,
     }
 
   gssh_connection_auth_async (data->ssh_connection,
-			      GSSH_CONNECTION_AUTH_MECHANISM_PASSWORD,
-			      data->ssh_cancellable,
-			      on_auth_complete, data);
+                              GSSH_CONNECTION_AUTH_MECHANISM_PASSWORD,
+                              data->ssh_cancellable,
+                              on_auth_complete, data);
 }
 
 static void
 on_ssh_handshake_complete (GObject             *src,
-			   GAsyncResult        *res,
-			   gpointer             user_data)
+                           GAsyncResult        *res,
+                           gpointer             user_data)
 {
   WebSocketData *data = user_data;
   GError *local_error = NULL;
@@ -457,8 +457,8 @@ on_ssh_handshake_complete (GObject             *src,
 
 static gboolean
 open_session_local (WebSocketData *data,
-		    GCancellable *cancellable,
-		    GError **error)
+                    GCancellable *cancellable,
+                    GError **error)
 {
   gboolean ret = FALSE;
   int session_stdin = -1;
@@ -551,8 +551,8 @@ out:
 
 static gboolean
 open_session_ssh (WebSocketData *data,
-		  GCancellable *cancellable,
-		  GError **error)
+                  GCancellable *cancellable,
+                  GError **error)
 {
   gboolean ret = FALSE;
   gs_unref_object GSocketConnectable *address = NULL;
@@ -569,7 +569,7 @@ open_session_ssh (WebSocketData *data,
                     G_CALLBACK (on_web_socket_message), data);
 
   gssh_connection_handshake_async (data->ssh_connection, data->ssh_cancellable,
-				   on_ssh_handshake_complete, data);
+                                   on_ssh_handshake_complete, data);
   
   ret = TRUE;
  out:
@@ -641,16 +641,16 @@ on_web_socket_open (WebSocketConnection *web_socket,
       gboolean success;
 
       if (data->specific_port == 0 &&
-	  g_strcmp0 (data->target_host, "localhost") == 0)
-	{
-	  success = open_session_local (data, NULL, &error);
-	}
+          g_strcmp0 (data->target_host, "localhost") == 0)
+        {
+          success = open_session_local (data, NULL, &error);
+        }
       else
-	{
-	  success = open_session_ssh (data, NULL, &error);
-	}
+        {
+          success = open_session_ssh (data, NULL, &error);
+        }
       if (!success)
-	{
+        {
 	  g_warning ("Failed to set up session: %s", error->message);
 	  g_clear_error (&error);
 	  
