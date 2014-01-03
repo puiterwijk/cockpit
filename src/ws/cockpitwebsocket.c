@@ -382,6 +382,7 @@ on_auth_complete (GObject                *src,
     {
       g_info ("Failed to authenticate with %s: %s", data->target_host, local_error->message);
       send_error (data, "not-authorized");
+      g_error_free (local_error);
       return;
     }
 
